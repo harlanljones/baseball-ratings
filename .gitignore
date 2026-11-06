@@ -9,6 +9,6 @@ dist/
 build/
 *.egg-info/
 # Raw MLBAM/Savant data and exports are never committed (data terms; see README NOTICE)
-data/
-grades/
+/data/
+/grades/
 *.parquet
