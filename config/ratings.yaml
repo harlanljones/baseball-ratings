@@ -1,0 +1,194 @@
+# baseball-ratings methodology constants.
+#
+# Every number here is a starting prior, not ground truth. The `src:` comments point to the
+# source list in docs/research/methodology-sources.md. UNSOURCED means a reasoned placeholder
+# that should be calibrated from data (PR4).
+
+scale:
+  mean: 50
+  points_per_sd: 10            # src: FG-Scale, BA-Scale (10 points = 1 SD; 20/80 = -/+3 SD)
+  clip_min: 20
+  clip_max: 80
+  display_step: 5              # scouts report in 5-point steps; raw float is kept too
+  # Reference population = MLB players in the graded season with at least this denominator.
+  # The SD is a *true-talent* SD: observed variance deflated by mean(1 + k/n) (see scale.py).
+  reference_min_n:              # keyed by denominator column
+    pa: 300
+    ab: 270
+    swings: 300
+    times_on_first: 60
+    xbh_23: 20
+    bip: 250
+    bbe: 100
+    o_pitches: 300
+    z_swings: 200
+    swings_tracked: 200
+    sprints: 10
+    def_games: 50
+    total_def_games: 50
+    throws: 50
+    innings: 300
+    chances: 100
+    arm_opps: 100
+    bf: 250
+    pitches: 500
+    sc_shape_pitches: 300
+    sc_pitches: 500
+
+levels:
+  # sportId meanings are for 2021+ (13/14 swapped in the 2021 reorg; see docs/research/statsapi.md).
+  # mean_age_* = PA/BF-weighted average age on June 30. src: BR-Register 2025 (hitters), BA-Ages2022 (pitchers).
+  MLB: {sport_id: 1, rank: 0, mean_age_hitter: 27.9, mean_age_pitcher: 28.3}
+  AAA: {sport_id: 11, rank: 1, mean_age_hitter: 26.5, mean_age_pitcher: 27.3}
+  AA: {sport_id: 12, rank: 2, mean_age_hitter: 23.8, mean_age_pitcher: 24.6}
+  A+: {sport_id: 13, rank: 3, mean_age_hitter: 22.2, mean_age_pitcher: 23.1}
+  A: {sport_id: 14, rank: 4, mean_age_hitter: 20.9, mean_age_pitcher: 21.9}
+  ROK: {sport_id: 16, rank: 5, mean_age_hitter: 19.6, mean_age_pitcher: 20.3}   # UNSOURCED
+
+# Savant pitch-level search levels. Coverage is still measured per game (release_speed present).
+statcast_levels:
+  MLB: {path: statcast_search, hf_level: null}
+  AAA: {path: statcast-search-minors, hf_level: AAA}
+  A: {path: statcast-search-minors, hf_level: A}
+
+# Linear weights for locally computed wOBA (statsapi has no MiLB sabermetrics).
+# src: FanGraphs Guts 2024-25 (approximate; recompute per season in PR4).
+woba_weights: {ubb: 0.69, hbp: 0.72, single: 0.88, double: 1.25, triple: 1.59, hr: 2.04}
+
+park:
+  regress_to_one: 0.5          # single-season park factors are noisy (BA-PF2022); shrink halfway to 1.0
+  home_share: 0.5              # a player's line is ~half home games
+
+# Outcome-stat level factors: MLB-equivalent = env-normalized level rate * factor.
+# Physical metrics (velo, EV90, sprint speed, arm) are NEVER translated.
+# Hitter factors: Cartwright All-Chained cumulative to MLB (src: Cartwright, MGL-Tango).
+# A and ROK are extrapolated (UNSOURCED). contact_pct factors UNSOURCED.
+level_factors:
+  hitter:
+    MLB: {k_pct: 1.00, bb_pct: 1.00, iso: 1.00, hr_pa: 1.00, contact_pct: 1.00, babip: 1.00}
+    AAA: {k_pct: 1.20, bb_pct: 0.82, iso: 0.80, hr_pa: 0.78, contact_pct: 0.97, babip: 0.93}
+    AA: {k_pct: 1.26, bb_pct: 0.73, iso: 0.76, hr_pa: 0.75, contact_pct: 0.96, babip: 0.90}
+    A+: {k_pct: 1.33, bb_pct: 0.71, iso: 0.73, hr_pa: 0.73, contact_pct: 0.95, babip: 0.88}
+    A: {k_pct: 1.40, bb_pct: 0.68, iso: 0.68, hr_pa: 0.68, contact_pct: 0.94, babip: 0.86}
+    ROK: {k_pct: 1.48, bb_pct: 0.65, iso: 0.62, hr_pa: 0.62, contact_pct: 0.93, babip: 0.84}
+  # Pitcher factors: reciprocal of the hitter factors as a prior (UNSOURCED; calibrate in PR4).
+  pitcher:
+    MLB: {k_pct: 1.00, bb_pct: 1.00, swstr_pct: 1.00, hr_pa: 1.00}
+    AAA: {k_pct: 0.83, bb_pct: 1.22, swstr_pct: 0.90, hr_pa: 1.28}
+    AA: {k_pct: 0.79, bb_pct: 1.37, swstr_pct: 0.87, hr_pa: 1.33}
+    A+: {k_pct: 0.75, bb_pct: 1.41, swstr_pct: 0.84, hr_pa: 1.37}
+    A: {k_pct: 0.71, bb_pct: 1.47, swstr_pct: 0.81, hr_pa: 1.47}
+    ROK: {k_pct: 0.68, bb_pct: 1.54, swstr_pct: 0.78, hr_pa: 1.61}
+
+# Metric definitions.
+#   denom: column holding the sample size n; k: EB shrinkage constant in denom units
+#          (n/(n+k) weight on the player; src: Carleton/Tango/Rosenblum, see research doc)
+#   kind: outcome (env-normalized + level-translated) | physical (compared raw)
+#   higher_is_better: sign of the z-score
+#   reference: mlb (z vs MLB pop) | level (z vs same-level pop; proxies with no MLB analogue)
+#   tier: statcast | boxscore | leaderboard
+#   park: apply park-factor adjustment (run/power outcome stats only)
+metrics:
+  # --- hitters, boxscore (statsapi; every level) ---
+  k_pct: {side: hitter, denom: pa, k: 60, kind: outcome, higher_is_better: false, tier: boxscore}
+  bb_pct: {side: hitter, denom: pa, k: 120, kind: outcome, higher_is_better: true, tier: boxscore}
+  iso: {side: hitter, denom: ab, k: 160, kind: outcome, higher_is_better: true, tier: boxscore, park: true}
+  hr_pa: {side: hitter, denom: pa, k: 170, kind: outcome, higher_is_better: true, tier: boxscore, park: true}
+  babip: {side: hitter, denom: bip, k: 820, kind: outcome, higher_is_better: true, tier: boxscore, park: true}
+  contact_pct: {side: hitter, denom: swings, k: 100, kind: outcome, higher_is_better: true, tier: boxscore}
+  pitches_per_pa: {side: hitter, denom: pa, k: 150, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}  # k UNSOURCED
+  sb_att_rate: {side: hitter, denom: times_on_first, k: 60, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}  # k UNSOURCED
+  triple_share: {side: hitter, denom: xbh_23, k: 40, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}  # k UNSOURCED
+  # --- hitters, pitch-level Statcast (MLB, AAA, FSL) ---
+  ev90: {side: hitter, denom: bbe, k: 26, kind: physical, higher_is_better: true, tier: statcast}
+  barrel_pct: {side: hitter, denom: bbe, k: 51, kind: physical, higher_is_better: true, tier: statcast}
+  chase_pct: {side: hitter, denom: o_pitches, k: 150, kind: outcome, higher_is_better: false, tier: statcast}  # k UNSOURCED
+  zone_contact_pct: {side: hitter, denom: z_swings, k: 150, kind: outcome, higher_is_better: true, tier: statcast}  # k UNSOURCED
+  # --- hitters, MLB-only leaderboards ---
+  bat_speed: {side: hitter, denom: swings_tracked, k: 10, kind: physical, higher_is_better: true, tier: leaderboard}
+  sprint_speed: {side: hitter, denom: sprints, k: 5, kind: physical, higher_is_better: true, tier: leaderboard}
+  # --- defense ---
+  oaa_rate: {side: fielder, denom: total_def_games, k: 40, kind: physical, higher_is_better: true, tier: leaderboard}   # OAA per 150 games; k UNSOURCED
+  catcher_def_rate: {side: fielder, denom: def_games, k: 40, kind: physical, higher_is_better: true, tier: leaderboard}
+  arm_equiv: {side: fielder, denom: throws, k: 15, kind: physical, higher_is_better: true, tier: leaderboard, catcher_group: true}  # catchers standardized separately
+  range_factor_rel: {side: fielder, denom: innings, k: 300, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}
+  fielding_pct_rel: {side: fielder, denom: chances, k: 300, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}
+  arm_proxy: {side: fielder, denom: arm_opps, k: 80, kind: outcome, higher_is_better: true, tier: boxscore, reference: level}
+  # --- pitchers, boxscore ---
+  p_k_pct: {side: pitcher, denom: bf, k: 70, kind: outcome, higher_is_better: true, tier: boxscore, factor: k_pct}
+  p_bb_pct: {side: pitcher, denom: bf, k: 170, kind: outcome, higher_is_better: false, tier: boxscore, factor: bb_pct}
+  p_swstr_pct: {side: pitcher, denom: pitches, k: 300, kind: outcome, higher_is_better: true, tier: boxscore, factor: swstr_pct}
+  # --- pitchers, pitch-level ---
+  p_stuff_raw: {side: pitcher, denom: sc_shape_pitches, k: 80, kind: physical, higher_is_better: true, tier: statcast}   # src: FG-Stuff (~80 pitches)
+  p_edge_pct: {side: pitcher, denom: sc_pitches, k: 400, kind: outcome, higher_is_better: true, tier: statcast}   # src: FG-Stuff Location+ ~400
+  p_heart_pct: {side: pitcher, denom: sc_pitches, k: 400, kind: outcome, higher_is_better: false, tier: statcast}
+  p_zone_pct: {side: pitcher, denom: sc_pitches, k: 300, kind: outcome, higher_is_better: true, tier: statcast}
+
+# Tools = weighted blends of metric z-scores, re-standardized against the MLB reference pop.
+# Missing components are dropped and the remaining weights renormalized.
+tools:
+  hitter:
+    hit: {contact_pct: 0.30, k_pct: 0.35, zone_contact_pct: 0.20, babip: 0.15}   # no xBA: power-contaminated; BABIP per FG-Wins
+    raw_power: {ev90: 0.70, bat_speed: 0.30, fallback: {iso: 0.5, hr_pa: 0.5}}
+    game_power: {iso: 0.45, hr_pa: 0.35, barrel_pct: 0.20}
+    discipline: {bb_pct: 0.45, chase_pct: 0.45, pitches_per_pa: 0.10}
+    speed: {sprint_speed: 1.0, fallback: {sb_att_rate: 0.6, triple_share: 0.4}}
+  fielder:
+    field: {oaa_rate: 1.0, catcher_def_rate: 1.0, fallback: {range_factor_rel: 0.7, fielding_pct_rel: 0.3}}
+    arm: {arm_equiv: 1.0, fallback: {arm_proxy: 1.0}}
+  pitcher:
+    stuff: {p_stuff_raw: 1.0, fallback: {p_swstr_pct: 0.5, p_k_pct: 0.5}}
+    control: {p_bb_pct: 1.0}
+    command: {p_edge_pct: 0.5, p_heart_pct: 0.3, p_zone_pct: 0.2}
+
+# Tango arm-strength position offsets to RF-equivalent mph (src: Tango-Arm 2022).
+arm_position_offsets: {RF: 0, CF: 1, LF: 1, SS: 4, 3B: 4, 2B: 7, 1B: 10, C: 0}
+
+# Heuristic per-pitch Stuff (PR1). Weights on within-pitch-type z-scores vs MLB.
+# The trained run-value model (PR3) replaces this. Features: velo (release_speed), ivb (pfx_z in),
+# arm_hb (arm-side horizontal break in), glove_hb, ext (release_extension), spin (release_spin_rate),
+# mov (total break magnitude), velo_gap (primary fastball velo minus this pitch), drop (FB ivb minus this ivb),
+# whiff (whiffs per swing, shrunk with k=40 swings).
+stuff_heuristic:
+  pitch_classes:
+    FF: [FF]
+    SI: [SI]
+    FC: [FC]
+    BR: [SL, ST, SV, CU, KC, CS]
+    OS: [CH, FS, FO, SC]
+  weights:
+    FF: {velo: 0.45, ivb: 0.25, ext: 0.10, whiff: 0.20}
+    SI: {velo: 0.45, arm_hb: 0.20, ext: 0.10, whiff: 0.25}
+    FC: {velo: 0.35, glove_hb: 0.15, ivb: 0.10, whiff: 0.40}
+    BR: {spin: 0.20, mov: 0.30, velo: 0.15, whiff: 0.35}
+    OS: {velo_gap: 0.25, drop: 0.25, whiff: 0.50}
+  whiff_k_swings: 40
+  min_pitches_per_type: 25
+
+# OFP: present value on the FV/WAR scale. WAR per 10 grade points (src: FG-Wins, 550 PA).
+ofp:
+  hitter:
+    base_war: 2.0                          # all-50 tools at a neutral position = average regular (FV 50)
+    war_per_10: {hit: 1.0, game_power: 0.9, discipline: 0.6, speed: 0.3, field: 0.8, arm: 0.3}   # src: FG-Wins (power 0.5-0.9); discipline UNSOURCED (~1 SD BB% = 15 BB ~ 0.9 WAR, shares signal with hit)
+    positional_adj_runs: {C: 12.5, SS: 7.5, 2B: 2.5, 3B: 2.5, CF: 2.5, LF: -7.5, RF: -7.5, 1B: -12.5, DH: -17.5}
+    runs_per_win: 10
+  pitcher:
+    base_war_sp: 2.15
+    base_war_rp: 0.45                      # one-inning reliever ~ FV 40 (src: FG-Primer2018)
+    war_per_10_sp: {stuff: 1.2, control: 0.6, command: 0.3}
+    war_per_10_rp: {stuff: 0.6, control: 0.3, command: 0.15}
+    starter_gs_share: 0.5                  # GS/G >= this -> SP
+  # FG 2018 band midpoints: WAR/yr if realized -> FV grade (80 assumed). Linear interpolation.
+  war_to_grade:
+    hitter: [[-1.0, 20], [-0.4, 30], [0.35, 40], [1.15, 45], [2.0, 50], [2.9, 55], [4.15, 60], [6.0, 70], [8.0, 80]]
+    pitcher: [[-1.0, 20], [-0.3, 30], [0.45, 40], [1.35, 45], [2.15, 50], [3.0, 55], [4.2, 60], [6.0, 70], [8.0, 80]]
+
+# FV (EXPERIMENTAL): OFP + age-vs-level adjustment. Old-for-level is penalized; young-for-level
+# is credited but capped (BP-FutureDT found weak upside effects). Stoltz (2022) ~22-25 wRC+/yr.
+fv:
+  points_per_year_young: 2.5               # UNSOURCED scaling of Stoltz's estimate onto the grade scale
+  points_per_year_old: 3.0
+  cap_up: 10.0
+  cap_down: 10.0
+  mlb_age_floor: 26                        # MLB players this age or older: FV = OFP
+  mlb_cap_up: 5.0                          # young big leaguers: smaller upside bump (already proven at the top level)

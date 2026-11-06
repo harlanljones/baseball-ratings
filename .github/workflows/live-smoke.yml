@@ -1,0 +1,31 @@
+# Manual, networked smoke test against the real MLB Stats API and Baseball Savant.
+# Kept out of PR CI: it is slow, depends on third-party uptime, and MLBAM terms ask for
+# low-volume use. Pulls one season of season stats + leaderboards and two days of Statcast.
+name: live-smoke
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: Season
+        default: "2025"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      BR_DATA_DIR: ${{ runner.temp }}/br-data
+      BR_CACHE_DIR: ${{ runner.temp }}/br-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run br ingest --season ${{ inputs.season }} --levels MLB,AAA --statcast --start ${{ inputs.season }}-07-12 --limit-days 2
+      - run: uv run br grade --season ${{ inputs.season }}
+      - run: uv run br leaders --season ${{ inputs.season }} --tool ofp --top 10 --min-n 400
+      - run: uv run br export --season ${{ inputs.season }} --out grades
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grades
+          path: grades/
